@@ -26,6 +26,13 @@
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;700&display=swap');
         body { font-family: 'Noto Sans TC', sans-serif; }
+        
+        /* 自訂捲軸樣式，讓表格內的大綱捲動比較好看 */
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; height: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: #f1f1f1; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 2px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
         @media print {
             @page { size: A4; margin: 10mm; }
             body * { visibility: hidden; }
@@ -48,7 +55,7 @@
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
         import { getFirestore, collection, addDoc, updateDoc, deleteDoc, doc, setDoc, getDoc, onSnapshot, serverTimestamp } from 'firebase/firestore';
 
-        // --- Firebase 設定區塊 ---
+        // --- Firebase 設定區塊 (自動判斷環境) ---
         let firebaseConfig;
         let appId = 'client-script-manager-public'; 
 
@@ -56,7 +63,7 @@
             firebaseConfig = JSON.parse(__firebase_config);
             if (typeof __app_id !== 'undefined') appId = __app_id;
         } else {
-            // 部署設定
+            // 2. ⚠️⚠️⚠️ 部署到 GitHub 時，會使用這裡的設定 ⚠️⚠️⚠️
             firebaseConfig = {
               apiKey: "AIzaSyC4xkXkRZBVat3qg7tMJLvAKsLelcHGku8",
               authDomain: "everyvideo-d89cb.firebaseapp.com",
@@ -68,7 +75,7 @@
             };
         }
 
-        // Initialize Firebase with Error Handling
+        // Initialize Firebase
         let app, auth, db;
         try {
             app = initializeApp(firebaseConfig);
@@ -85,7 +92,7 @@
             targets: ["上班族", "學生", "家庭主婦", "高消費族群", "潮流人士"]
         };
 
-        // ... (CSV Parser and other helpers remain the same) ...
+        // --- Helper Functions ---
         const parseCSVFile = (text) => {
             const rows = [];
             let currentRow = [];
@@ -215,14 +222,12 @@
             const [user, setUser] = useState(null);
             const [projects, setProjects] = useState([]);
             const [loading, setLoading] = useState(true);
-            // ⚠️ 新增：錯誤訊息狀態，用來顯示為什麼會轉圈圈
             const [errorMsg, setErrorMsg] = useState(null); 
             
             const [activeTab, setActiveTab] = useState('list');
             const [selectedProject, setSelectedProject] = useState(null);
             const [parsedScript, setParsedScript] = useState([]);
             
-            // UI State
             const [searchTerm, setSearchTerm] = useState('');
             const [filterClient, setFilterClient] = useState('All');
             const [filterStyle, setFilterStyle] = useState('All');
@@ -240,25 +245,22 @@
             const [parsedImportData, setParsedImportData] = useState(null);
             const [deleteConfirmId, setDeleteConfirmId] = useState(null);
             
+            // New: Processing State for Modals
+            const [isProcessing, setIsProcessing] = useState(false);
+            
             const fileInputRef = useRef(null);
             const [isUploading, setIsUploading] = useState(false);
             const [uploadProgress, setUploadProgress] = useState({ current: 0, total: 0 });
 
             // Auth
             useEffect(() => {
-                // 嘗試登入，如果失敗會顯示錯誤
                 signInAnonymously(auth).catch((error) => {
                     console.error("Auth Error:", error);
                     setErrorMsg("登入失敗: " + error.message);
                     setLoading(false);
                 });
-                
                 return onAuthStateChanged(auth, (u) => {
                     setUser(u);
-                    // 如果沒有使用者，也不要一直轉，顯示需登入狀態
-                    if (!u) {
-                        // Normally waiting for auth, but if it takes too long or fails silently
-                    }
                 });
             }, []);
 
@@ -267,8 +269,6 @@
                 if (!user) return; 
                 
                 const scriptsRef = collection(db, 'artifacts', appId, 'public', 'data', 'scripts');
-                
-                // ⚠️ 重要修正：新增 Error Callback 來捕捉權限錯誤
                 const unsubscribeScripts = onSnapshot(scriptsRef, (snapshot) => {
                     const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     docs.sort((a, b) => {
@@ -276,7 +276,7 @@
                         return (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0);
                     });
                     setProjects(docs);
-                    setLoading(false); // 成功載入，停止轉圈
+                    setLoading(false);
                     
                     if (selectedProject) {
                         const updatedSelected = docs.find(d => d.id === selectedProject.id);
@@ -286,18 +286,13 @@
                         }
                     }
                 }, (error) => {
-                    // ⚠️ 這裡就是捕捉錯誤的地方！
                     console.error("Firestore Error:", error);
                     let msg = error.message;
                     if (msg.includes("permission-denied")) {
                         msg = "權限不足 (Permission Denied)。請檢查 Firestore Rules。";
-                    } else if (msg.includes("quota-exceeded")) {
-                        msg = "配額已滿 (Quota Exceeded)。";
-                    } else if (msg.includes("client-offline")) {
-                        msg = "網路連線中斷。";
                     }
                     setErrorMsg("讀取資料失敗: " + msg);
-                    setLoading(false); // 發生錯誤也要停止轉圈，不然會卡死
+                    setLoading(false);
                 });
                 
                 const optionsRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global_options');
@@ -306,13 +301,12 @@
                     else setDoc(optionsRef, DEFAULT_OPTIONS).catch(console.error);
                 }, (error) => {
                     console.error("Options Fetch Error:", error);
-                    // 選項讀取失敗通常不影響主功能，不顯示阻擋性錯誤
                 });
 
                 return () => { unsubscribeScripts(); unsubscribeOptions(); };
             }, [user, selectedProject?.id]); 
 
-            // ... (Rest of handlers remain same) ...
+            // CSV Upload
             const handleCSVUpload = async (e) => {
                 const file = e.target.files?.[0];
                 if (!file) return;
@@ -358,22 +352,68 @@
                 setOptions(newOptions);
                 await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global_options'), newOptions, { merge: true });
             };
+            
             const handleAnalyzeImport = () => setParsedImportData(parseImportText(importText));
+            
+            // --- Revised Confirm Import ---
             const handleConfirmImport = async () => {
                 if (!parsedImportData) return;
+                setIsProcessing(true); // Start loading
                 try {
-                    const newProjectData = { client: "匯入腳本", title: parsedImportData.title || "未命名", core: parsedImportData.core || "AI 生成", style: "", product: "", target: "", refLink: "", outline: parsedImportData.outline || importText, createdAt: serverTimestamp() };
+                    const newProjectData = { 
+                        client: "匯入腳本", 
+                        title: parsedImportData.title || "未命名", 
+                        core: parsedImportData.core || "AI 生成", 
+                        style: "", product: "", target: "", refLink: "", 
+                        outline: parsedImportData.outline || importText, 
+                        createdAt: serverTimestamp() 
+                    };
                     const docRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'scripts'), newProjectData);
+                    
+                    // Update UI immediately
                     handleSelectProject({ id: docRef.id, ...newProjectData, createdAt: { seconds: Date.now() / 1000 } });
-                    setImportText(''); setParsedImportData(null); setIsImportOpen(false);
-                } catch (e) { console.error(e); alert("匯入失敗"); }
+                    
+                    // Clean up and close modal
+                    setImportText(''); 
+                    setParsedImportData(null); 
+                    setIsImportOpen(false);
+                } catch (e) { 
+                    console.error(e); 
+                    alert("匯入失敗: " + e.message); 
+                } finally {
+                    setIsProcessing(false); // End loading
+                }
             };
+
             const handleAddProject = async () => {
                 await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'scripts'), { client: "新客戶", title: "未命名專案", core: "", style: options.styles?.[0]||"", product: options.products?.[0]||"", target: options.targets?.[0]||"", refLink: "", outline: "起 | \n承 | \n轉 | \n合 | ", createdAt: serverTimestamp() });
             };
             const handleDuplicate = async (e, p) => { e.stopPropagation(); const {id, ...d} = p; await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'scripts'), {...d, title: `${d.title} (副本)`, createdAt: serverTimestamp()}); };
+            
+            // --- Revised Delete Logic ---
             const requestDelete = (e, id) => { e.stopPropagation(); setDeleteConfirmId(id); };
-            const executeDelete = async () => { if (!deleteConfirmId) return; await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'scripts', deleteConfirmId)); if (selectedProject?.id === deleteConfirmId) { setSelectedProject(null); setActiveTab('list'); } setDeleteConfirmId(null); };
+            
+            const executeDelete = async () => { 
+                if (!deleteConfirmId) return; 
+                setIsProcessing(true); // Start loading
+                try {
+                    await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'scripts', deleteConfirmId)); 
+                    
+                    if (selectedProject?.id === deleteConfirmId) { 
+                        setSelectedProject(null); 
+                        setActiveTab('list'); 
+                    } 
+                    // Close modal on success
+                    setDeleteConfirmId(null); 
+                } catch (e) {
+                    console.error("Delete failed", e);
+                    alert("刪除失敗: " + e.message);
+                    setDeleteConfirmId(null); // Close even on error to avoid stuck modal
+                } finally {
+                    setIsProcessing(false); // End loading
+                }
+            };
+
             const handleUpdate = async (id, d) => { await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'scripts', id), {...d, lastEditedAt: serverTimestamp()}); setEditingId(null); };
             const handleSelectProject = (p) => { if(editingId !== p.id) { setSelectedProject(p); setParsedScript(parseOutline(p.outline)); setActiveTab('preview'); }};
             const saveInlineEdit = () => { if(editingId && tempData) handleUpdate(editingId, tempData); };
@@ -387,7 +427,6 @@
             const clearFilters = () => { setSearchTerm(''); setFilterClient('All'); setFilterStyle('All'); setFilterProduct('All'); setFilterTarget('All'); };
             const hasActiveFilters = searchTerm || filterClient !== 'All' || filterStyle !== 'All' || filterProduct !== 'All' || filterTarget !== 'All';
 
-            // ⚠️ 錯誤處理介面：如果有錯誤，顯示錯誤訊息，而不是一直轉圈
             if (errorMsg) {
                 return React.createElement('div', {className: "flex h-screen items-center justify-center text-red-500 flex-col gap-4 p-8 text-center"},
                     React.createElement(AlertTriangle, {className: "w-16 h-16"}),
@@ -397,7 +436,7 @@
                         React.createElement('p', {className: "font-bold mb-2"}, "常見解決方法："),
                         React.createElement('ul', {className: "list-disc pl-5 space-y-1"},
                             React.createElement('li', null, "請前往 Firebase Console > Authentication > Settings > Authorized domains"),
-                            React.createElement('li', null, "新增您的 GitHub 網址 (例如 yourname.github.io)"),
+                            React.createElement('li', null, "新增您的 GitHub 網址"),
                             React.createElement('li', null, "確認 Firestore Database 是否已建立並設為公開 (Rules)")
                         )
                     ),
@@ -432,8 +471,11 @@
                                 React.createElement('p', { className: "text-slate-500 text-sm" }, "此操作無法復原，該腳本將會永久移除。")
                             ),
                             React.createElement('div', { className: "p-4 bg-gray-50 flex gap-3 justify-center border-t border-gray-100" },
-                                React.createElement('button', { onClick: () => setDeleteConfirmId(null), className: "px-5 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium transition-colors" }, "取消"),
-                                React.createElement('button', { onClick: executeDelete, className: "px-5 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 font-medium shadow-md transition-colors flex items-center gap-2" }, React.createElement(Trash2, { className: "w-4 h-4" }), " 確認刪除")
+                                React.createElement('button', { onClick: () => setDeleteConfirmId(null), disabled: isProcessing, className: "px-5 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium transition-colors" }, "取消"),
+                                React.createElement('button', { onClick: executeDelete, disabled: isProcessing, className: "px-5 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 font-medium shadow-md transition-colors flex items-center gap-2" }, 
+                                    isProcessing ? React.createElement(Loader2, { className: "w-4 h-4 animate-spin" }) : React.createElement(Trash2, { className: "w-4 h-4" }), 
+                                    isProcessing ? "刪除中..." : "確認刪除"
+                                )
                             )
                         )
                     ),
@@ -462,7 +504,11 @@
                                 )
                             ),
                             React.createElement('div', { className: "p-4 border-t flex justify-end gap-2" },
-                                !parsedImportData ? React.createElement('button', { onClick: handleAnalyzeImport, disabled: !importText.trim(), className: "bg-indigo-600 text-white px-4 py-2 rounded" }, "解析") : React.createElement('button', { onClick: handleConfirmImport, className: "bg-green-600 text-white px-4 py-2 rounded" }, "確認匯入")
+                                !parsedImportData ? React.createElement('button', { onClick: handleAnalyzeImport, disabled: !importText.trim(), className: "bg-indigo-600 text-white px-4 py-2 rounded" }, "解析") : 
+                                React.createElement('button', { onClick: handleConfirmImport, disabled: isProcessing, className: "bg-green-600 text-white px-6 py-2 rounded hover:bg-green-700 flex items-center gap-2" }, 
+                                    isProcessing ? React.createElement(Loader2, { className: "w-4 h-4 animate-spin" }) : React.createElement(Save, { className: "w-4 h-4" }),
+                                    isProcessing ? "匯入中..." : "確認並預覽"
+                                )
                             )
                         )
                     ),
@@ -471,6 +517,7 @@
                         React.createElement('h3', { className: "text-xl font-bold" }, "正在匯入 CSV..."),
                         React.createElement('p', { className: "mt-2 text-teal-200" }, `進度：${uploadProgress.current} / ${uploadProgress.total}`)
                     ),
+                    // Controls
                     React.createElement('div', { className: "flex flex-col xl:flex-row xl:items-center justify-between gap-4 mb-6 no-print" },
                         React.createElement('div', { className: "flex bg-white p-1 rounded-lg shadow-sm border border-gray-200 w-fit" },
                             React.createElement('button', { onClick: () => setActiveTab('list'), className: `flex items-center gap-2 px-6 py-2 rounded-md text-sm font-bold transition-all ${activeTab === 'list' ? 'bg-teal-50 text-teal-900 shadow-sm' : 'text-gray-500'}` }, React.createElement(Database, { className: "w-4 h-4" }), " 專案總覽"),
@@ -526,7 +573,8 @@
                                                     p.target && React.createElement('span', { className: "px-2 py-0.5 bg-emerald-50 text-emerald-600 rounded text-[10px] border border-emerald-100" }, `🎯 ${p.target}`)
                                                 )
                                             ),
-                                            React.createElement('td', { className: "p-3 align-top font-mono text-xs truncate max-w-xs", title: p.outline }, isEditing ? React.createElement('textarea', { className: "w-full border rounded p-1 font-mono", rows: 6, value: tempData.outline, onChange: e => setTempData({ ...tempData, outline: e.target.value }) }) : p.outline?.substring(0, 50) + '...'),
+                                            // ⚠️ 修改重點：換成 div 並加上 whitespace-pre-wrap 讓大綱換行
+                                            React.createElement('td', { className: "p-3 align-top font-mono text-xs" }, isEditing ? React.createElement('textarea', { className: "w-full border rounded p-1 font-mono", rows: 6, value: tempData.outline, onChange: e => setTempData({ ...tempData, outline: e.target.value }) }) : React.createElement('div', { className: "whitespace-pre-wrap max-h-40 overflow-y-auto custom-scrollbar" }, p.outline)),
                                             React.createElement('td', { className: "p-3 align-top" }, isEditing ? React.createElement('input', { className: "w-full border rounded p-1 text-xs", value: tempData.refLink, onChange: e => setTempData({ ...tempData, refLink: e.target.value }) }) : p.refLink && React.createElement('a', { href: p.refLink, target: "_blank", className: "text-teal-600", onClick: e => e.stopPropagation() }, React.createElement(ExternalLink, { className: "w-4 h-4" }))),
                                             React.createElement('td', { className: "p-3 text-center sticky right-0 bg-white group-hover:bg-gray-50 shadow-[-5px_0_10px_-5px_rgba(0,0,0,0.05)]", onClick: e => e.stopPropagation() },
                                                 isEditing ? React.createElement('div', { className: "flex gap-1" }, React.createElement('button', { onClick: saveInlineEdit }, React.createElement(Save, { className: "w-4 h-4 text-teal-600" })), React.createElement('button', { onClick: () => setEditingId(null) }, React.createElement(X, { className: "w-4 h-4 text-gray-400" })))
@@ -542,6 +590,7 @@
                             )
                         )
                     ),
+                    // ... Preview mode remains the same ...
                     activeTab === 'preview' && selectedProject && React.createElement('div', { className: "max-w-4xl mx-auto animate-fadeIn pb-20 print-container" },
                         React.createElement('div', { className: "flex justify-between items-center mb-4 no-print" },
                             React.createElement('button', { onClick: () => setActiveTab('list'), className: "text-gray-500 hover:text-gray-800 flex items-center gap-1 text-sm bg-white px-3 py-1.5 rounded-full shadow-sm" }, React.createElement(ArrowRight, { className: "w-4 h-4 rotate-180" }), " 返回"),
