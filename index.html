@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Client Script Manager</title>
+    
+    <!-- 1. 引入 Tailwind CSS (樣式) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- 2. 設定 React 和 Firebase 的執行環境 -->
+    <script type="importmap">
+    {
+      "imports": {
+        "react": "https://esm.sh/react@18.2.0",
+        "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+        "lucide-react": "https://esm.sh/lucide-react@0.292.0",
+        "firebase/app": "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js",
+        "firebase/auth": "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js",
+        "firebase/firestore": "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js"
+      }
+    }
+    </script>
+    
+    <!-- 解決中文亂碼與字型 -->
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;700&display=swap');
+        body { font-family: 'Noto Sans TC', sans-serif; }
+        @media print {
+            @page { size: A4; margin: 10mm; }
+            body * { visibility: hidden; }
+            .print-container, .print-container * { visibility: visible; }
+            .print-container { position: absolute; left: 0; top: 0; width: 100%; }
+            nav, button, .no-print { display: none !important; }
+        }
+        .animate-fadeIn { animation: fadeIn 0.4s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body class="bg-slate-50 text-gray-800">
+    <div id="root"></div>
+
+    <script type="module">
+        import React, { useState, useEffect, useMemo, useRef } from 'react';
+        import { createRoot } from 'react-dom/client';
+        import { FileText, Database, ArrowRight, Printer, Save, X, Plus, Trash2, Download, AlertCircle, Loader2, Users, User, ExternalLink, Tag, Copy, Briefcase, Search, Filter, Settings, PlusCircle, MinusCircle, Upload, Check, Info, FileSpreadsheet, AlertTriangle } from 'lucide-react';
+        import { initializeApp } from 'firebase/app';
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+        import { getFirestore, collection, addDoc, updateDoc, deleteDoc, doc, setDoc, getDoc, onSnapshot, serverTimestamp } from 'firebase/firestore';
+
+        // --- Firebase 設定區塊 (自動判斷環境) ---
+        let firebaseConfig;
+        let appId = 'client-script-manager-public'; // 預設 App ID
+
+        // 1. 如果是在 Gemini 預覽環境中，自動使用內建設定 (讓現在的預覽會動)
+        if (typeof __firebase_config !== 'undefined') {
+            firebaseConfig = JSON.parse(__firebase_config);
+            if (typeof __app_id !== 'undefined') appId = __app_id;
+        } else {
+            // 2. ⚠️⚠️⚠️ 部署到 GitHub 時，會使用這裡的設定 ⚠️⚠️⚠️
+            // 我已經幫你把你提供的 everyvideo 設定填好了！
+            firebaseConfig = {
+              apiKey: "AIzaSyC4xkXkRZBVat3qg7tMJLvAKsLelcHGku8",
+              authDomain: "everyvideo-d89cb.firebaseapp.com",
+              projectId: "everyvideo-d89cb",
+              storageBucket: "everyvideo-d89cb.firebasestorage.app",
+              messagingSenderId: "435577367444",
+              appId: "1:435577367444:web:5b94cea86c952b9dfa7d81",
+              measurementId: "G-LWRPKH6XLY"
+            };
+        }
+
+        // Initialize Firebase
+        // 增加錯誤處理，避免設定錯誤導致白畫面
+        let app, auth, db;
+        try {
+            app = initializeApp(firebaseConfig);
+            auth = getAuth(app);
+            db = getFirestore(app);
+        } catch (error) {
+            console.error("Firebase 初始化失敗，請檢查設定:", error);
+            document.body.innerHTML = `<div style="padding:20px; color:red;"><h3>Firebase 連線錯誤</h3><p>請檢查 index.html 中的 firebaseConfig 是否已正確填入。</p><pre>${error.message}</pre></div>`;
+        }
+
+        // --- 以下程式碼邏輯與之前的完全相同 ---
+
+        const DEFAULT_OPTIONS = {
+            styles: ["知識教學", "情境劇", "開箱實測", "採訪/對談", "Vlog記錄"],
+            products: ["染髮", "燙髮", "護髮", "頭皮SPA", "居家洗護"],
+            targets: ["上班族", "學生", "家庭主婦", "高消費族群", "潮流人士"]
+        };
+
+        // CSV Parser
+        const parseCSVFile = (text) => {
+            const rows = [];
+            let currentRow = [];
+            let currentCell = '';
+            let insideQuotes = false;
+            const normalizedText = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+            for (let i = 0; i < normalizedText.length; i++) {
+                const char = normalizedText[i];
+                const nextChar = normalizedText[i + 1];
+                if (char === '"') {
+                    if (insideQuotes && nextChar === '"') { currentCell += '"'; i++; } 
+                    else { insideQuotes = !insideQuotes; }
+                } else if (char === ',' && !insideQuotes) {
+                    currentRow.push(currentCell.trim()); currentCell = '';
+                } else if (char === '\n' && !insideQuotes) {
+                    currentRow.push(currentCell.trim());
+                    if (currentRow.some(c => c)) rows.push(currentRow);
+                    currentRow = []; currentCell = '';
+                } else { currentCell += char; }
+            }
+            if (currentCell || currentRow.length > 0) {
+                currentRow.push(currentCell.trim());
+                if (currentRow.some(c => c)) rows.push(currentRow);
+            }
+            return rows;
+        };
+
+        // Dynamic Parser
+        const parseOutline = (outlineText) => {
+            if (!outlineText) return [];
+            const lines = outlineText.split('\n');
+            const sections = [];
+            let currentSection = null;
+            const getDisplayTitle = (rawTitle) => {
+                const t = rawTitle.trim();
+                if (t === '起' || t === '開場') return '起';
+                if (t === '承' || t === '說明') return '承';
+                if (t === '轉' || t === '解決') return '轉';
+                if (t === '合' || t === 'CTA') return '合';
+                return t; 
+            };
+            lines.forEach(line => {
+                const normalizedLine = line.replace(/｜/g, '|');
+                const trimmedLine = normalizedLine.trim();
+                if (!trimmedLine) return;
+                const pipeIndex = trimmedLine.indexOf('|');
+                if (pipeIndex !== -1 && pipeIndex < 10) { 
+                    const rawTitle = trimmedLine.substring(0, pipeIndex).trim();
+                    const content = trimmedLine.substring(pipeIndex + 1).trim();
+                    if (currentSection) sections.push(currentSection);
+                    currentSection = { title: getDisplayTitle(rawTitle), content: content };
+                } else {
+                    if (currentSection) currentSection.content += '\n' + trimmedLine;
+                    else currentSection = { title: '內容', content: trimmedLine };
+                }
+            });
+            if (currentSection) sections.push(currentSection);
+            if (sections.length === 0 && outlineText.trim()) sections.push({ title: "內容", content: outlineText });
+            return sections;
+        };
+
+        // Import Text Parser
+        const parseImportText = (text) => {
+            const result = { title: "", core: "", outline: text };
+            if (!text) return result;
+            const lines = text.split('\n');
+            let outlineBuffer = [];
+            lines.forEach(line => {
+                let cleanLine = line.trim().replace(/｜/g, '|');
+                const lowerLine = cleanLine.toLowerCase();
+                if (lowerLine.startsWith('標題') || lowerLine.startsWith('title')) {
+                    if (!result.title) result.title = cleanLine.replace(/^(標題|Title)[:：\s]*/i, '').trim();
+                    return; 
+                }
+                if (lowerLine.startsWith('核心') || lowerLine.startsWith('core') || lowerLine.startsWith('概念') || lowerLine.startsWith('簡述')) {
+                    if (!result.core) result.core = cleanLine.replace(/^(核心|Core|概念|簡述)[:：\s]*/i, '').trim();
+                    return; 
+                }
+                const sectionMatch = cleanLine.match(/^([^\s：:]{1,6})[:：\s]/); 
+                if (sectionMatch) {
+                    const rawHeader = sectionMatch[1];
+                    if (['起','承','轉','合','開場','說明','優點','痛點','解決','CTA','結尾'].includes(rawHeader) || cleanLine.includes('|')) {
+                        if (cleanLine.includes('|')) outlineBuffer.push(cleanLine);
+                        else {
+                            const content = cleanLine.replace(/^([^\s：:]{1,6})[:：\s]*/, '').trim();
+                            let key = rawHeader;
+                            if (key === '開場') key = '起';
+                            else if (key === '說明' || key === '優點') key = '承';
+                            else if (key === '解決' || key === '轉折') key = '轉';
+                            else if (key === '結尾' || key === 'CTA') key = '合';
+                            outlineBuffer.push(`${key} | ${content}`);
+                        }
+                        return;
+                    }
+                }
+                if (cleanLine) outlineBuffer.push(cleanLine);
+            });
+            if (outlineBuffer.length > 0) result.outline = outlineBuffer.join('\n');
+            if (!result.title && lines.length > 0) {
+                const firstLine = lines[0].trim().replace(/｜/g, '|');
+                if (firstLine.length < 30 && !firstLine.includes('|')) result.title = firstLine;
+            }
+            return result;
+        };
+
+        // CSV Export Helper
+        const exportToCSV = (data) => {
+            const headers = ["客戶名稱", "主題名稱", "核心", "風格", "產品/技術", "適合客群", "大綱", "參考連結"];
+            const rows = data.map(item => [
+                `"${item.client?.replace(/"/g, '""') || ''}"`,
+                `"${item.title?.replace(/"/g, '""') || ''}"`,
+                `"${item.core?.replace(/"/g, '""') || ''}"`,
+                `"${item.style?.replace(/"/g, '""') || ''}"`,
+                `"${item.product?.replace(/"/g, '""') || ''}"`,
+                `"${item.target?.replace(/"/g, '""') || ''}"`,
+                `"${item.outline?.replace(/"/g, '""') || ''}"`,
+                `"${item.refLink?.replace(/"/g, '""') || ''}"`
+            ]);
+            const csvContent = "data:text/csv;charset=utf-8,\uFEFF" + headers.join(",") + "\n" + rows.map(e => e.join(",")).join("\n");
+            const encodedUri = encodeURI(csvContent);
+            const link = document.createElement("a");
+            link.setAttribute("href", encodedUri);
+            link.setAttribute("download", `客戶腳本備份_${new Date().toLocaleDateString()}.csv`);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        };
+
+        // --- Main Component ---
+        function App() {
+            const [user, setUser] = useState(null);
+            const [projects, setProjects] = useState([]);
+            const [loading, setLoading] = useState(true);
+            const [activeTab, setActiveTab] = useState('list');
+            const [selectedProject, setSelectedProject] = useState(null);
+            const [parsedScript, setParsedScript] = useState([]);
+            
+            // UI State
+            const [searchTerm, setSearchTerm] = useState('');
+            const [filterClient, setFilterClient] = useState('All');
+            const [filterStyle, setFilterStyle] = useState('All');
+            const [filterProduct, setFilterProduct] = useState('All');
+            const [filterTarget, setFilterTarget] = useState('All');
+
+            const [editingId, setEditingId] = useState(null);
+            const [tempData, setTempData] = useState({});
+            const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+            const [options, setOptions] = useState(DEFAULT_OPTIONS);
+            const [newOptionInputs, setNewOptionInputs] = useState({ styles: '', products: '', targets: '' });
+
+            // Modal State
+            const [isImportOpen, setIsImportOpen] = useState(false);
+            const [importText, setImportText] = useState('');
+            const [parsedImportData, setParsedImportData] = useState(null);
+            const [deleteConfirmId, setDeleteConfirmId] = useState(null);
+            
+            // CSV Upload State
+            const fileInputRef = useRef(null);
+            const [isUploading, setIsUploading] = useState(false);
+            const [uploadProgress, setUploadProgress] = useState({ current: 0, total: 0 });
+
+            // Auth
+            useEffect(() => {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    signInWithCustomToken(auth, __initial_auth_token).catch(console.error);
+                } else {
+                    signInAnonymously(auth).catch(console.error);
+                }
+                return onAuthStateChanged(auth, setUser);
+            }, []);
+
+            // Data
+            useEffect(() => {
+                if (!user) return; 
+                // Rule 1: Strict Paths
+                const scriptsRef = collection(db, 'artifacts', appId, 'public', 'data', 'scripts');
+                const unsubscribeScripts = onSnapshot(scriptsRef, (snapshot) => {
+                    const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    // Rule 2: Client-side sorting
+                    docs.sort((a, b) => {
+                        if (a.client !== b.client) return (a.client || "").localeCompare(b.client || "");
+                        return (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0);
+                    });
+                    setProjects(docs);
+                    setLoading(false);
+                    if (selectedProject) {
+                        const updatedSelected = docs.find(d => d.id === selectedProject.id);
+                        if (updatedSelected && JSON.stringify(updatedSelected) !== JSON.stringify(selectedProject)) {
+                            setSelectedProject(updatedSelected);
+                            setParsedScript(parseOutline(updatedSelected.outline));
+                        }
+                    }
+                }, (error) => {
+                    console.error("Firestore Error:", error);
+                    // Fallback UI or silent fail
+                });
+                
+                const optionsRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global_options');
+                const unsubscribeOptions = onSnapshot(optionsRef, (docSnap) => {
+                    if (docSnap.exists()) setOptions(docSnap.data());
+                    else setDoc(optionsRef, DEFAULT_OPTIONS).catch(console.error);
+                });
+                return () => { unsubscribeScripts(); unsubscribeOptions(); };
+            }, [user, selectedProject?.id]); 
+
+            // CSV Upload
+            const handleCSVUpload = async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                setIsUploading(true);
+                setUploadProgress({ current: 0, total: 0 });
+                const reader = new FileReader();
+                reader.onload = async (event) => {
+                    try {
+                        const text = event.target.result;
+                        const rows = parseCSVFile(text);
+                        if (rows.length < 2) { alert("CSV 格式錯誤"); setIsUploading(false); return; }
+                        const header = rows[0].map(h => h.toLowerCase().trim());
+                        const getIdx = (keywords) => header.findIndex(h => keywords.some(k => h.includes(k)));
+                        const map = { client: getIdx(['客戶', 'client']), title: getIdx(['主題', '標題', 'title']), core: getIdx(['核心', 'core', '概念']), style: getIdx(['風格', 'style']), product: getIdx(['產品', 'product']), target: getIdx(['客群', 'target']), outline: getIdx(['大綱', '內容', 'outline', 'script']), refLink: getIdx(['連結', 'link', '參考']) };
+                        const dataRows = rows.slice(1);
+                        setUploadProgress({ current: 0, total: dataRows.length });
+                        let successCount = 0;
+                        for (const row of dataRows) {
+                            if (!row[map.outline] && !row[map.title]) continue;
+                            const newDoc = { client: map.client > -1 ? row[map.client] : (row[0] || "匯入客戶"), title: map.title > -1 ? row[map.title] : (row[1] || "未命名"), core: map.core > -1 ? row[map.core] : "", style: map.style > -1 ? row[map.style] : "", product: map.product > -1 ? row[map.product] : "", target: map.target > -1 ? row[map.target] : "", outline: map.outline > -1 ? row[map.outline] : (row[6] || ""), refLink: map.refLink > -1 ? row[map.refLink] : "", createdAt: serverTimestamp() };
+                            await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'scripts'), newDoc);
+                            successCount++;
+                            setUploadProgress(prev => ({ ...prev, current: successCount }));
+                        }
+                        alert(`匯入完成：${successCount} 筆`);
+                    } catch (err) { console.error(err); alert("匯入錯誤"); } finally { setIsUploading(false); if (fileInputRef.current) fileInputRef.current.value = ''; }
+                };
+                reader.readAsText(file);
+            };
+
+            // Handlers
+            const handleAddOption = async (category, value) => {
+                if (!value.trim()) return;
+                const currentList = options[category] || [];
+                if (currentList.includes(value)) return;
+                const newOptions = { ...options, [category]: [...currentList, value.trim()] };
+                setOptions(newOptions);
+                setNewOptionInputs({ ...newOptionInputs, [category]: '' });
+                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global_options'), newOptions, { merge: true });
+            };
+            const handleRemoveOption = async (category, value) => {
+                if (!window.confirm(`刪除「${value}」？`)) return;
+                const newOptions = { ...options, [category]: (options[category] || []).filter(i => i !== value) };
+                setOptions(newOptions);
+                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global_options'), newOptions, { merge: true });
+            };
+            const handleAnalyzeImport = () => setParsedImportData(parseImportText(importText));
+            const handleConfirmImport = async () => {
+                if (!parsedImportData) return;
+                try {
+                    const newProjectData = { client: "匯入腳本", title: parsedImportData.title || "未命名", core: parsedImportData.core || "AI 生成", style: "", product: "", target: "", refLink: "", outline: parsedImportData.outline || importText, createdAt: serverTimestamp() };
+                    const docRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'scripts'), newProjectData);
+                    handleSelectProject({ id: docRef.id, ...newProjectData, createdAt: { seconds: Date.now() / 1000 } });
+                    setImportText(''); setParsedImportData(null); setIsImportOpen(false);
+                } catch (e) { console.error(e); alert("匯入失敗"); }
+            };
+            const handleAddProject = async () => {
+                await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'scripts'), { client: "新客戶", title: "未命名專案", core: "", style: options.styles?.[0]||"", product: options.products?.[0]||"", target: options.targets?.[0]||"", refLink: "", outline: "起 | \n承 | \n轉 | \n合 | ", createdAt: serverTimestamp() });
+            };
+            const handleDuplicate = async (e, p) => { e.stopPropagation(); const {id, ...d} = p; await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'scripts'), {...d, title: `${d.title} (副本)`, createdAt: serverTimestamp()}); };
+            const requestDelete = (e, id) => { e.stopPropagation(); setDeleteConfirmId(id); };
+            const executeDelete = async () => { if (!deleteConfirmId) return; await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'scripts', deleteConfirmId)); if (selectedProject?.id === deleteConfirmId) { setSelectedProject(null); setActiveTab('list'); } setDeleteConfirmId(null); };
+            const handleUpdate = async (id, d) => { await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'scripts', id), {...d, lastEditedAt: serverTimestamp()}); setEditingId(null); };
+            const handleSelectProject = (p) => { if(editingId !== p.id) { setSelectedProject(p); setParsedScript(parseOutline(p.outline)); setActiveTab('preview'); }};
+            const saveInlineEdit = () => { if(editingId && tempData) handleUpdate(editingId, tempData); };
+
+            // Filters
+            const uniqueClients = useMemo(() => ['All', ...Array.from(new Set(projects.map(p => p.client || '未分類').filter(Boolean))).sort()], [projects]);
+            const filteredProjects = useMemo(() => projects.filter(p => {
+                const s = searchTerm.toLowerCase();
+                const matchSearch = (p.title||'').toLowerCase().includes(s) || (p.client||'').toLowerCase().includes(s) || (p.core||'').toLowerCase().includes(s);
+                return matchSearch && (filterClient === 'All' || (p.client||'未分類') === filterClient) && (filterStyle === 'All' || (p.style||'') === filterStyle) && (filterProduct === 'All' || (p.product||'') === filterProduct) && (filterTarget === 'All' || (p.target||'') === filterTarget);
+            }), [projects, searchTerm, filterClient, filterStyle, filterProduct, filterTarget]);
+            const clearFilters = () => { setSearchTerm(''); setFilterClient('All'); setFilterStyle('All'); setFilterProduct('All'); setFilterTarget('All'); };
+            const hasActiveFilters = searchTerm || filterClient !== 'All' || filterStyle !== 'All' || filterProduct !== 'All' || filterTarget !== 'All';
+
+            if (loading) return React.createElement('div', {className: "flex h-screen items-center justify-center text-slate-500 gap-2"}, React.createElement(Loader2, {className: "w-8 h-8 animate-spin text-teal-600"}), " 載入中...");
+
+            // --- Render ---
+            return React.createElement('div', { className: "min-h-screen bg-slate-50 text-gray-800 font-sans" },
+                // Navbar
+                React.createElement('nav', { className: "bg-teal-900 text-white p-3 shadow-lg flex justify-between items-center sticky top-0 z-20 no-print" },
+                    React.createElement('div', { className: "flex items-center gap-3" },
+                        React.createElement('div', { className: "bg-teal-600 p-2 rounded-lg shadow-inner" }, React.createElement(Briefcase, { className: "w-5 h-5 text-white" })),
+                        React.createElement('div', null, React.createElement('h1', { className: "text-lg font-bold" }, "Client Script Manager"), React.createElement('p', { className: "text-[10px] text-teal-300" }, "客戶專案管理系統"))
+                    ),
+                    React.createElement('div', { className: "flex items-center gap-2" },
+                        activeTab === 'list' && React.createElement(React.Fragment, null,
+                            React.createElement('input', { type: "file", accept: ".csv", ref: fileInputRef, className: "hidden", onChange: handleCSVUpload }),
+                            React.createElement('button', { onClick: () => fileInputRef.current?.click(), className: "text-teal-100 hover:text-white hover:bg-teal-800 px-3 py-1.5 rounded flex items-center gap-1 transition-colors text-xs font-medium border border-teal-700/50" }, React.createElement(FileSpreadsheet, { className: "w-4 h-4" }), " 匯入"),
+                            React.createElement('button', { onClick: () => exportToCSV(projects), className: "text-teal-100 hover:text-white hover:bg-teal-800 px-3 py-1.5 rounded flex items-center gap-1 transition-colors text-xs font-medium border border-teal-700/50" }, React.createElement(Download, { className: "w-4 h-4" }), " 匯出"),
+                            React.createElement('button', { onClick: () => setIsSettingsOpen(true), className: "text-teal-200 hover:text-white p-2 rounded-full hover:bg-teal-800" }, React.createElement(Settings, { className: "w-5 h-5" }))
+                        )
+                    )
+                ),
+                // Main
+                React.createElement('main', { className: "container mx-auto p-4 md:p-6 max-w-[1400px]" },
+                    // Modals
+                    deleteConfirmId && React.createElement('div', { className: "fixed inset-0 bg-black/60 z-[70] flex items-center justify-center p-4 backdrop-blur-sm animate-fadeIn" },
+                        React.createElement('div', { className: "bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden flex flex-col" },
+                            React.createElement('div', { className: "p-6 text-center" },
+                                React.createElement('div', { className: "w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4" }, React.createElement(Trash2, { className: "w-8 h-8 text-red-500" })),
+                                React.createElement('h3', { className: "text-xl font-bold text-slate-800 mb-2" }, "確定要刪除嗎？"),
+                                React.createElement('p', { className: "text-slate-500 text-sm" }, "此操作無法復原，該腳本將會永久移除。")
+                            ),
+                            React.createElement('div', { className: "p-4 bg-gray-50 flex gap-3 justify-center border-t border-gray-100" },
+                                React.createElement('button', { onClick: () => setDeleteConfirmId(null), className: "px-5 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium transition-colors" }, "取消"),
+                                React.createElement('button', { onClick: executeDelete, className: "px-5 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 font-medium shadow-md transition-colors flex items-center gap-2" }, React.createElement(Trash2, { className: "w-4 h-4" }), " 確認刪除")
+                            )
+                        )
+                    ),
+                    isSettingsOpen && React.createElement('div', { className: "fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm" },
+                        React.createElement('div', { className: "bg-white rounded-xl shadow-2xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[85vh]" },
+                            React.createElement('div', { className: "p-4 border-b flex justify-between" }, React.createElement('h3', { className: "font-bold text-lg" }, "設定"), React.createElement('button', { onClick: () => setIsSettingsOpen(false) }, React.createElement(X, { className: "w-5 h-5" }))),
+                            React.createElement('div', { className: "p-6 overflow-y-auto grid grid-cols-3 gap-4 bg-slate-50" },
+                                ['styles', 'products', 'targets'].map(type => React.createElement('div', { key: type, className: "bg-white p-3 rounded shadow border" },
+                                    React.createElement('h4', { className: "font-bold mb-2 capitalize" }, type),
+                                    React.createElement('ul', { className: "max-h-40 overflow-y-auto mb-2 text-sm" }, options[type]?.map(o => React.createElement('li', { key: o, className: "flex justify-between p-1 hover:bg-gray-100" }, o, React.createElement('button', { onClick: () => handleRemoveOption(type, o), className: "text-red-300 hover:text-red-500" }, React.createElement(MinusCircle, { className: "w-3 h-3" }))))),
+                                    React.createElement('div', { className: "flex gap-1" }, React.createElement('input', { className: "border rounded w-full px-1 text-sm", value: newOptionInputs[type], onChange: e => setNewOptionInputs({ ...newOptionInputs, [type]: e.target.value }) }), React.createElement('button', { onClick: () => handleAddOption(type, newOptionInputs[type]), className: "text-teal-600" }, React.createElement(PlusCircle, null)))
+                                ))
+                            )
+                        )
+                    ),
+                    isImportOpen && React.createElement('div', { className: "fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm" },
+                        React.createElement('div', { className: "bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]" },
+                            React.createElement('div', { className: "p-4 border-b bg-indigo-50 flex justify-between" }, React.createElement('h3', { className: "font-bold text-lg text-indigo-900" }, "單筆文字匯入"), React.createElement('button', { onClick: () => setIsImportOpen(false) }, React.createElement(X, { className: "w-5 h-5" }))),
+                            React.createElement('div', { className: "p-6 overflow-y-auto space-y-4" },
+                                !parsedImportData ? React.createElement('textarea', { className: "w-full h-64 border rounded p-3 text-sm font-mono", placeholder: "貼上腳本文字...", value: importText, onChange: e => setImportText(e.target.value) }) :
+                                React.createElement('div', { className: "space-y-2" },
+                                    React.createElement('p', { className: "text-green-600 font-bold flex gap-2" }, React.createElement(Check, null), " 解析成功"),
+                                    React.createElement('input', { className: "w-full border rounded p-2", value: parsedImportData.title, onChange: e => setParsedImportData({ ...parsedImportData, title: e.target.value }) }),
+                                    React.createElement('input', { className: "w-full border rounded p-2", value: parsedImportData.core, onChange: e => setParsedImportData({ ...parsedImportData, core: e.target.value }) }),
+                                    React.createElement('textarea', { className: "w-full h-40 border rounded p-2 font-mono text-sm", value: parsedImportData.outline, onChange: e => setParsedImportData({ ...parsedImportData, outline: e.target.value }) })
+                                )
+                            ),
+                            React.createElement('div', { className: "p-4 border-t flex justify-end gap-2" },
+                                !parsedImportData ? React.createElement('button', { onClick: handleAnalyzeImport, disabled: !importText.trim(), className: "bg-indigo-600 text-white px-4 py-2 rounded" }, "解析") : React.createElement('button', { onClick: handleConfirmImport, className: "bg-green-600 text-white px-4 py-2 rounded" }, "確認匯入")
+                            )
+                        )
+                    ),
+                    isUploading && React.createElement('div', { className: "fixed inset-0 bg-black/80 z-[60] flex flex-col items-center justify-center text-white" },
+                        React.createElement(Loader2, { className: "w-12 h-12 animate-spin mb-4 text-teal-400" }),
+                        React.createElement('h3', { className: "text-xl font-bold" }, "正在匯入 CSV..."),
+                        React.createElement('p', { className: "mt-2 text-teal-200" }, `進度：${uploadProgress.current} / ${uploadProgress.total}`)
+                    ),
+                    // Controls
+                    React.createElement('div', { className: "flex flex-col xl:flex-row xl:items-center justify-between gap-4 mb-6 no-print" },
+                        React.createElement('div', { className: "flex bg-white p-1 rounded-lg shadow-sm border border-gray-200 w-fit" },
+                            React.createElement('button', { onClick: () => setActiveTab('list'), className: `flex items-center gap-2 px-6 py-2 rounded-md text-sm font-bold transition-all ${activeTab === 'list' ? 'bg-teal-50 text-teal-900 shadow-sm' : 'text-gray-500'}` }, React.createElement(Database, { className: "w-4 h-4" }), " 專案總覽"),
+                            React.createElement('button', { disabled: !selectedProject, onClick: () => setActiveTab('preview'), className: `flex items-center gap-2 px-6 py-2 rounded-md text-sm font-bold transition-all ${activeTab === 'preview' ? 'bg-teal-600 text-white shadow-sm' : 'text-gray-400'}` }, React.createElement(FileText, { className: "w-4 h-4" }), " 腳本預覽")
+                        ),
+                        activeTab === 'list' && React.createElement('div', { className: "flex flex-col md:flex-row flex-1 gap-2 max-w-4xl" },
+                            React.createElement('div', { className: "flex flex-1 items-center bg-white p-1.5 rounded-lg border border-gray-200 shadow-sm" },
+                                React.createElement(Search, { className: "w-4 h-4 text-gray-400 ml-2 mr-2" }),
+                                React.createElement('input', { type: "text", placeholder: "搜尋關鍵字...", className: "flex-1 bg-transparent border-none text-sm focus:ring-0 outline-none", value: searchTerm, onChange: e => setSearchTerm(e.target.value) })
+                            ),
+                            React.createElement('div', { className: "flex gap-2 overflow-x-auto pb-1 md:pb-0" },
+                                React.createElement('select', { className: "bg-white text-sm border border-gray-200 rounded py-1.5 px-3 text-gray-700 focus:ring-2 focus:ring-teal-500 outline-none shadow-sm cursor-pointer min-w-[100px]", value: filterClient, onChange: e => setFilterClient(e.target.value) }, React.createElement('option', { value: "All" }, "所有客戶"), uniqueClients.filter(c => c !== 'All').map(c => React.createElement('option', { key: c }, c))),
+                                React.createElement('select', { className: "bg-white text-sm border border-gray-200 rounded py-1.5 px-3 text-gray-700 focus:ring-2 focus:ring-teal-500 outline-none shadow-sm cursor-pointer min-w-[100px]", value: filterStyle, onChange: e => setFilterStyle(e.target.value) }, React.createElement('option', { value: "All" }, "所有風格"), options.styles?.map(s => React.createElement('option', { key: s }, s))),
+                                React.createElement('select', { className: "bg-white text-sm border border-gray-200 rounded py-1.5 px-3 text-gray-700 focus:ring-2 focus:ring-teal-500 outline-none shadow-sm cursor-pointer min-w-[100px]", value: filterProduct, onChange: e => setFilterProduct(e.target.value) }, React.createElement('option', { value: "All" }, "所有產品"), options.products?.map(p => React.createElement('option', { key: p }, p))),
+                                React.createElement('select', { className: "bg-white text-sm border border-gray-200 rounded py-1.5 px-3 text-gray-700 focus:ring-2 focus:ring-teal-500 outline-none shadow-sm cursor-pointer min-w-[100px]", value: filterTarget, onChange: e => setFilterTarget(e.target.value) }, React.createElement('option', { value: "All" }, "所有客群"), options.targets?.map(t => React.createElement('option', { key: t }, t))),
+                                hasActiveFilters && React.createElement('button', { onClick: clearFilters, className: "px-3 py-1.5 text-red-500 bg-red-50 hover:bg-red-100 rounded text-xs whitespace-nowrap flex items-center gap-1" }, React.createElement(X, { className: "w-3 h-3" }), " 重置")
+                            )
+                        ),
+                        activeTab === 'list' && React.createElement('div', { className: "flex gap-2" },
+                            React.createElement('button', { onClick: () => setIsImportOpen(true), className: "bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg shadow-md flex items-center gap-2 text-sm font-bold whitespace-nowrap" }, React.createElement(Upload, { className: "w-4 h-4" }), " 單筆"),
+                            React.createElement('button', { onClick: handleAddProject, className: "bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 rounded-lg shadow-md flex items-center gap-2 text-sm font-bold whitespace-nowrap" }, React.createElement(Plus, { className: "w-4 h-4" }), " 新增")
+                        )
+                    ),
+                    // List View
+                    activeTab === 'list' && React.createElement('div', { className: "bg-white rounded-xl shadow-md border border-gray-200 overflow-hidden flex flex-col h-[calc(100vh-240px)]" },
+                        React.createElement('div', { className: "overflow-auto flex-1" },
+                            React.createElement('table', { className: "w-full text-left border-collapse min-w-[1400px]" },
+                                React.createElement('thead', { className: "sticky top-0 z-10 bg-gray-100 shadow-sm text-gray-500 text-xs font-bold uppercase whitespace-nowrap" },
+                                    React.createElement('tr', null,
+                                        React.createElement('th', { className: "p-3 pl-6 w-32" }, "客戶"),
+                                        React.createElement('th', { className: "p-3 w-40" }, "主題"),
+                                        React.createElement('th', { className: "p-3 w-48" }, "核心"),
+                                        React.createElement('th', { className: "p-3 w-32" }, "標籤 (風格/產品/客群)"),
+                                        React.createElement('th', { className: "p-3 min-w-[300px]" }, "大綱"),
+                                        React.createElement('th', { className: "p-3 w-24" }, "連結"),
+                                        React.createElement('th', { className: "p-3 w-28 text-center sticky right-0 bg-gray-100" }, "操作")
+                                    )
+                                ),
+                                React.createElement('tbody', { className: "text-sm text-gray-600 divide-y divide-gray-100" },
+                                    filteredProjects.map(p => {
+                                        const isEditing = editingId === p.id;
+                                        return React.createElement('tr', { key: p.id, className: `group border-l-4 hover:bg-gray-50 ${isEditing ? 'bg-teal-50 border-teal-500' : 'border-transparent'}`, onClick: () => !isEditing && handleSelectProject(p) },
+                                            React.createElement('td', { className: "p-3 pl-6 align-top font-bold text-teal-800" }, isEditing ? React.createElement('input', { className: "w-full border rounded p-1", value: tempData.client, onChange: e => setTempData({ ...tempData, client: e.target.value }) }) : p.client),
+                                            React.createElement('td', { className: "p-3 align-top font-bold" }, isEditing ? React.createElement('input', { className: "w-full border rounded p-1", value: tempData.title, onChange: e => setTempData({ ...tempData, title: e.target.value }) }) : p.title),
+                                            React.createElement('td', { className: "p-3 align-top text-xs" }, isEditing ? React.createElement('textarea', { className: "w-full border rounded p-1", rows: 3, value: tempData.core, onChange: e => setTempData({ ...tempData, core: e.target.value }) }) : p.core),
+                                            React.createElement('td', { className: "p-3 align-top space-y-1" },
+                                                isEditing ? React.createElement('div', { className: "flex flex-col gap-1" },
+                                                    React.createElement('select', { className: "border rounded p-1 text-xs", value: tempData.style, onChange: e => setTempData({ ...tempData, style: e.target.value }) }, React.createElement('option', { value: "" }, "風格"), options.styles?.map(o => React.createElement('option', { key: o }, o))),
+                                                    React.createElement('select', { className: "border rounded p-1 text-xs", value: tempData.product, onChange: e => setTempData({ ...tempData, product: e.target.value }) }, React.createElement('option', { value: "" }, "產品"), options.products?.map(o => React.createElement('option', { key: o }, o))),
+                                                    React.createElement('select', { className: "border rounded p-1 text-xs", value: tempData.target, onChange: e => setTempData({ ...tempData, target: e.target.value }) }, React.createElement('option', { value: "" }, "客群"), options.targets?.map(o => React.createElement('option', { key: o }, o)))
+                                                ) : React.createElement('div', { className: "flex flex-col gap-1 items-start" },
+                                                    p.style && React.createElement('span', { className: "px-2 py-0.5 bg-gray-100 rounded text-[10px] border" }, `🎨 ${p.style}`),
+                                                    p.product && React.createElement('span', { className: "px-2 py-0.5 bg-blue-50 text-blue-600 rounded text-[10px] border border-blue-100" }, `📦 ${p.product}`),
+                                                    p.target && React.createElement('span', { className: "px-2 py-0.5 bg-emerald-50 text-emerald-600 rounded text-[10px] border border-emerald-100" }, `🎯 ${p.target}`)
+                                                )
+                                            ),
+                                            React.createElement('td', { className: "p-3 align-top font-mono text-xs truncate max-w-xs", title: p.outline }, isEditing ? React.createElement('textarea', { className: "w-full border rounded p-1 font-mono", rows: 6, value: tempData.outline, onChange: e => setTempData({ ...tempData, outline: e.target.value }) }) : p.outline?.substring(0, 50) + '...'),
+                                            React.createElement('td', { className: "p-3 align-top" }, isEditing ? React.createElement('input', { className: "w-full border rounded p-1 text-xs", value: tempData.refLink, onChange: e => setTempData({ ...tempData, refLink: e.target.value }) }) : p.refLink && React.createElement('a', { href: p.refLink, target: "_blank", className: "text-teal-600", onClick: e => e.stopPropagation() }, React.createElement(ExternalLink, { className: "w-4 h-4" }))),
+                                            React.createElement('td', { className: "p-3 text-center sticky right-0 bg-white group-hover:bg-gray-50 shadow-[-5px_0_10px_-5px_rgba(0,0,0,0.05)]", onClick: e => e.stopPropagation() },
+                                                isEditing ? React.createElement('div', { className: "flex gap-1" }, React.createElement('button', { onClick: saveInlineEdit }, React.createElement(Save, { className: "w-4 h-4 text-teal-600" })), React.createElement('button', { onClick: () => setEditingId(null) }, React.createElement(X, { className: "w-4 h-4 text-gray-400" })))
+                                                    : React.createElement('div', { className: "flex gap-2 justify-center opacity-0 group-hover:opacity-100" },
+                                                        React.createElement('button', { onClick: (e) => { e.stopPropagation(); setEditingId(p.id); setTempData({ ...p }); } }, React.createElement(AlertCircle, { className: "w-4 h-4 text-teal-600" })),
+                                                        React.createElement('button', { onClick: (e) => handleDuplicate(e, p) }, React.createElement(Copy, { className: "w-4 h-4 text-blue-500" })),
+                                                        React.createElement('button', { onClick: (e) => requestDelete(e, p.id) }, React.createElement(Trash2, { className: "w-4 h-4 text-red-400" }))
+                                                    )
+                                            )
+                                        );
+                                    })
+                                )
+                            )
+                        )
+                    ),
+                    // Preview View
+                    activeTab === 'preview' && selectedProject && React.createElement('div', { className: "max-w-4xl mx-auto animate-fadeIn pb-20 print-container" },
+                        React.createElement('div', { className: "flex justify-between items-center mb-4 no-print" },
+                            React.createElement('button', { onClick: () => setActiveTab('list'), className: "text-gray-500 hover:text-gray-800 flex items-center gap-1 text-sm bg-white px-3 py-1.5 rounded-full shadow-sm" }, React.createElement(ArrowRight, { className: "w-4 h-4 rotate-180" }), " 返回"),
+                            React.createElement('button', { onClick: () => window.print(), className: "flex items-center gap-2 px-4 py-2 bg-teal-900 text-white rounded hover:bg-teal-800 shadow-lg text-sm font-bold" }, React.createElement(Printer, { className: "w-4 h-4" }), " 列印 / PDF")
+                        ),
+                        React.createElement('div', { className: "bg-white shadow-2xl border border-gray-200 min-h-[800px] p-0 print:shadow-none print:border-none print:m-0" },
+                            React.createElement('div', { className: "flex border-b-2 border-teal-900" },
+                                React.createElement('div', { className: "w-32 bg-teal-50 p-4 font-bold text-teal-900 border-r border-teal-100 text-center flex items-center justify-center" }, "專案"),
+                                React.createElement('div', { className: "p-4 flex-1" },
+                                    React.createElement('div', { className: "font-bold text-2xl mb-2" }, selectedProject.title),
+                                    React.createElement('div', { className: "text-sm font-bold text-teal-600 bg-teal-50 px-3 py-1 rounded w-fit" }, selectedProject.client),
+                                    React.createElement('div', { className: "flex gap-2 mt-2" },
+                                        selectedProject.product && React.createElement('span', { className: "px-2 py-0.5 bg-blue-100 text-blue-800 text-xs rounded font-bold" }, `📦 ${selectedProject.product}`),
+                                        selectedProject.style && React.createElement('span', { className: "px-2 py-0.5 bg-gray-100 text-gray-800 text-xs rounded font-bold" }, `🎨 ${selectedProject.style}`)
+                                    )
+                                )
+                            ),
+                            React.createElement('div', { className: "flex border-b-2 border-teal-900" },
+                                React.createElement('div', { className: "w-32 bg-teal-50 p-4 font-bold text-teal-900 border-r border-teal-100 text-center flex items-center justify-center" }, "核心"),
+                                React.createElement('div', { className: "p-4 text-slate-600 text-sm flex items-center" }, selectedProject.core)
+                            ),
+                            React.createElement('div', { className: "w-full" },
+                                React.createElement('div', { className: "grid grid-cols-12 bg-teal-800 text-white text-sm font-bold border-b border-teal-900" },
+                                    React.createElement('div', { className: "col-span-2 p-3 text-center border-r border-teal-700" }, "段落"),
+                                    React.createElement('div', { className: "col-span-4 p-3 text-center border-r border-teal-700" }, "畫面 / 情境"),
+                                    React.createElement('div', { className: "col-span-4 p-3 text-center border-r border-teal-700" }, "字幕重點"),
+                                    React.createElement('div', { className: "col-span-2 p-3 text-center" }, "示意圖")
+                                ),
+                                parsedScript.map((s, i) => React.createElement('div', { key: i, className: "grid grid-cols-12 border-b border-gray-300 min-h-[120px] print:break-inside-avoid" },
+                                    React.createElement('div', { className: "col-span-2 p-4 font-bold text-gray-700 flex items-center justify-center text-center border-r border-gray-200 bg-gray-50/50 text-lg" }, s.title),
+                                    React.createElement('div', { className: "col-span-4 p-4 text-sm text-gray-600 border-r border-gray-200 whitespace-pre-wrap" }, s.content.split('：')[0] || s.content),
+                                    React.createElement('div', { className: "col-span-4 p-4 text-sm text-gray-800 border-r border-gray-200 whitespace-pre-wrap font-medium bg-teal-50/30" }, s.content.includes('：') ? s.content.split('：')[1] : ''),
+                                    React.createElement('div', { className: "col-span-2 p-4 flex items-center justify-center" }, React.createElement('div', { className: "h-16 w-full border-2 border-dashed border-gray-200 rounded text-xs text-gray-400 flex items-center justify-center" }, "圖"))
+                                )),
+                                React.createElement('div', { className: "p-4 text-xs text-gray-400 text-center border-t mt-4" }, "Script generated by Client Script Manager")
+                            )
+                        )
+                    )
+                )
+            );
+        }
+
+        const root = createRoot(document.getElementById('root'));
+        root.render(React.createElement(App));
+    </script>
+</body>
+</html>
